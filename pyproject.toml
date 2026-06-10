@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phylomsa"
+version = "0.1.0"
+description = "Phylogenetic aware paired MSA generator"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "biopython>=1.80",
+    "pandas>=1.5.0",
+    "numpy>=1.20.0",
+    "ete3>=3.1.0"
+]
+
+[project.scripts]
+# This allows you to run your tools from the command line like: $ cystrap-design
+#cystrap-design = "cystrap.design:main"
+#cystrap-analyze = "cystrap.analyze:main"
