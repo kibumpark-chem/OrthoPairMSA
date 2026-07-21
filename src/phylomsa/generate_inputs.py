@@ -7,6 +7,8 @@ from enum import Enum
 from typing import Union, List
 
 _ALPHABET = string.ascii_uppercase + string.ascii_lowercase + string.digits
+# AlphaFold 3 / Protenix require chain IDs to be single uppercase letters.
+_AF3_ALPHABET = string.ascii_uppercase
 
 class Mode(Enum):
     DEFAULT = "default"
@@ -17,6 +19,27 @@ def _get_chain_id(n: int) -> str:
     if n < len(_ALPHABET):
         return _ALPHABET[n]
     raise ValueError("Exceeded maximum number of chain IDs.")
+
+def _is_af3_chain_id(chain_id: str) -> bool:
+    """True if id is a single uppercase letter (AF3 / Protenix rule)."""
+    return isinstance(chain_id, str) and len(chain_id) == 1 and chain_id in _AF3_ALPHABET
+
+def _resolve_af3_chain_id(idx: int, provided: str = None) -> str:
+    """
+    Keep a valid AF3 letter id; otherwise assign A, B, C, ... by chain index.
+    UniProt accessions (e.g. P32324) are remapped automatically.
+    """
+    if provided is not None and _is_af3_chain_id(provided):
+        return provided
+    if idx >= len(_AF3_ALPHABET):
+        raise ValueError(
+            f"Exceeded maximum AF3 chain IDs ({len(_AF3_ALPHABET)}). "
+            f"Got index {idx} for provided id={provided!r}."
+        )
+    letter = _AF3_ALPHABET[idx]
+    if provided is not None and provided != letter:
+        print(f"AF3/Protenix: remapping chain id '{provided}' -> '{letter}'")
+    return letter
 
 def _check_required_keys(
         required_keys: List[Union[str, tuple]], provided_keys: List[str]
@@ -45,18 +68,54 @@ def _protein_config(
     config["sequence"] = kwargs["sequence"]
 
     if version == 2:
-        unpaired = kwargs.get("unpairedMsaPath") or kwargs.get("unpairedMSA")
+        unpaired = kwargs.get("unpairedMsaPath") or kwargs.get("unpairedMSA") or kwargs.get("unpairedMsa")
         if unpaired:
-            config["unpairedMsaPath"] = str(unpaired)
+            # Prefer path field when caller passed unpairedMsaPath
+            if kwargs.get("unpairedMsaPath"):
+                config["unpairedMsaPath"] = str(kwargs["unpairedMsaPath"])
+            else:
+                config["unpairedMsa"] = str(unpaired)
             
         paired = kwargs.get("pairedMsaPath") or kwargs.get("pairedMsa")
-        if paired:
-            config["pairedMsaPath"] = str(paired)
+        if kwargs.get("pairedMsaPath"):
+            config["pairedMsaPath"] = str(kwargs["pairedMsaPath"])
+        elif paired is not None:
+            config["pairedMsa"] = str(paired)
             
-        if "templates" in kwargs and kwargs["templates"] is not None:
-            config["templatesPath"] = str(kwargs["templates"])
+        if "templatesPath" in kwargs and kwargs["templatesPath"] is not None:
+            config["templatesPath"] = str(kwargs["templatesPath"])
+        elif "templates" in kwargs and kwargs["templates"] is not None:
+            templates = kwargs["templates"]
+            if isinstance(templates, list):
+                config["templates"] = templates
+            else:
+                config["templatesPath"] = str(templates)
 
     return config
+
+
+def _ensure_af3_custom_msa_complete(protein_cfg: dict) -> dict:
+    """
+    AF3 requires unpaired MSA, paired MSA, and templates to be set together.
+    If any custom MSA/template field is present, fill the missing ones with
+    empty values (pairedMsa="", templates=[]) so the data pipeline is skipped
+    for those channels.
+    """
+    has_unpaired = "unpairedMsa" in protein_cfg or "unpairedMsaPath" in protein_cfg
+    has_paired = "pairedMsa" in protein_cfg or "pairedMsaPath" in protein_cfg
+    has_templates = "templates" in protein_cfg or "templatesPath" in protein_cfg
+
+    if not (has_unpaired or has_paired or has_templates):
+        return protein_cfg
+
+    if not has_unpaired:
+        protein_cfg["unpairedMsa"] = ""
+    if not has_paired:
+        # Inline empty string — do NOT use pairedMsaPath:"" (AF3 rejects that).
+        protein_cfg["pairedMsa"] = ""
+    if not has_templates:
+        protein_cfg["templates"] = []
+    return protein_cfg
 
 def _ligand_config(
         idx: int,
@@ -88,6 +147,9 @@ def create_af3_config(
     if model_seeds is None:
         model_seeds = [1]
 
+    # AF3 job names should be simple identifiers, not filesystem paths.
+    job_name = pathlib.Path(job_name).name
+
     config = {
         "name": job_name,
         "modelSeeds": model_seeds,
@@ -105,10 +167,13 @@ def create_af3_config(
     for idx, entity in enumerate(entities):
         if entity['type'] == 'protein':
             safe_params = entity.get('params', {}).copy()
-            safe_params.pop("templates", None) 
+            safe_params["id"] = _resolve_af3_chain_id(idx, safe_params.get("id"))
             sequence_config = _protein_config(idx, version, **safe_params)
+            sequence_config = _ensure_af3_custom_msa_complete(sequence_config)
         elif entity['type'] == 'ligand':
-            sequence_config = _ligand_config(idx, **entity.get('params', {}))
+            lig_params = entity.get('params', {}).copy()
+            lig_params["id"] = _resolve_af3_chain_id(idx, lig_params.get("id"))
+            sequence_config = _ligand_config(idx, **lig_params)
         else:
             raise NotImplementedError(f"Handling for {entity['type']} not implemented.")
         
@@ -133,6 +198,8 @@ def create_protenix_config(
     if model_seeds is None:
         model_seeds = [1]
 
+    job_name = pathlib.Path(job_name).name
+
     config = {
         "name": job_name,
         "modelSeeds": model_seeds,
@@ -141,9 +208,13 @@ def create_protenix_config(
     sequences = []
     for idx, entity in enumerate(entities):
         if entity['type'] == 'protein':
-            sequence_config = _protein_config(idx, version=2, **entity.get('params', {}))
+            safe_params = entity.get('params', {}).copy()
+            safe_params["id"] = _resolve_af3_chain_id(idx, safe_params.get("id"))
+            sequence_config = _protein_config(idx, version=2, **safe_params)
         elif entity['type'] == 'ligand':
-            sequence_config = _ligand_config(idx, **entity.get('params', {}))
+            lig_params = entity.get('params', {}).copy()
+            lig_params["id"] = _resolve_af3_chain_id(idx, lig_params.get("id"))
+            sequence_config = _ligand_config(idx, **lig_params)
         else:
             raise NotImplementedError(f"Handling for {entity['type']} not implemented.")
         
