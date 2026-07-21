@@ -44,14 +44,7 @@ AF3 / Protenix remap UniProt chain ids to single letters (`A`, `B`, …).
 - On `PATH`: `mafft`, `cd-hit`, `perl`
 - Network access to UniProt (and InterPro if using that source)
 
-Install the package (optional):
-
-```bash
-cd PhyloMSA
-pip install -e .
-```
-
-Or use an env that already has these deps (e.g. `phylomsa` / `phylo`).
+No package install is required for the shell workflow — `generate_paired_msa.sh` runs scripts from `src/phylomsa/` directly. Use any env that has the deps above (e.g. `phylomsa` / `phylo`).
 
 First-time `ete3` taxonomy DB (needed for species mapping):
 
