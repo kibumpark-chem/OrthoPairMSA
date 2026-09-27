@@ -1,4 +1,4 @@
-# PhyloMSA
+# OrthoPairMSA
 
 Phylogeny-aware paired MSA generator for protein–protein complexes in co-folding models (AlphaFold 3, Protenix, Boltz).
 
